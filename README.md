@@ -81,6 +81,16 @@ implementation and signs the digest **it** computed, after checking:
   so the contract refuses to encode calldata at all, which deletes the entire
   "sign this contract call" class of attack
 
+The signed transaction the contract stores is built from those same checked
+fields by the same encoder, pinned by a known-answer test against a
+transaction signed independently with viem.
+
+Every estate's derivation path must also start with its owner's account id
+(`owner.testnet/ethereum-1`). The address depends only on `(contract, path)`,
+so without that rule anyone could open a vigil over somebody else's path, name
+themselves heir, go silent, and have the MPC network sign away an estate that
+was never theirs. Account ids cannot contain `/`, so no two owners can collide.
+
 ### What an agent can still do
 
 Be honest about the edges. A compromised or lazy agent can:
@@ -120,19 +130,19 @@ on 13 November 2026:
 | Contract | [`vigil-1268e2.testnet`](https://testnet.nearblocks.io/address/vigil-1268e2.testnet) |
 | Yield source | [`pool-1268e2.testnet`](https://testnet.nearblocks.io/address/pool-1268e2.testnet) (mock, per-second accrual) |
 | MPC signer | `v1.signer-prod.testnet` |
-| Estate address | [`0xf2ce3aa4f02ef8c45de56002e4ae2e801bacdcc1`](https://sepolia.etherscan.io/address/0xf2ce3aa4f02ef8c45de56002e4ae2e801bacdcc1) on Sepolia, derived from `(vigil-1268e2.testnet, "ethereum-1")` |
+| Estate address | [`0xf314ec824b86445cb0a13ced9748b6aad5212c66`](https://sepolia.etherscan.io/address/0xf314ec824b86445cb0a13ced9748b6aad5212c66) on Sepolia, derived from `(vigil-1268e2.testnet, "owner-1268e2.testnet/ethereum-1")` |
 
 The transactions from that run, in order:
 
 | Step | Result | Transaction |
 |---|---|---|
-| `open_vigil` — 0.4 N, ~40 s of life | opened | [`E4SRuVJy…`](https://testnet.nearblocks.io/txns/E4SRuVJywcN293bdedujogaKiC15gWZjR1YQPEBYGtGQ) |
-| `tick` — anyone charges rent | agent **starved** | [`4BZ7xi32…`](https://testnet.nearblocks.io/txns/4BZ7xi32NRBXAeFE2c7bGQ8U8Qf2pzgLeJGbDNFmcq7k) |
-| `declare_silence` on a dead agent | **refused**: *a dead agent cannot settle an estate* | [`F1ugmSAp…`](https://testnet.nearblocks.io/txns/F1ugmSApGgtspgxaJZMtLTgkYvTaVMLBXb9gLTkC1WZG) |
-| `reopen_vigil` — owner only, 3 N | watching | [`5wbqGWJG…`](https://testnet.nearblocks.io/txns/5wbqGWJG811TXVvVdsr4N4gedGZPN8cajr6HsijRKbeD) |
-| `check_in` | alive | [`Ebxqm1na…`](https://testnet.nearblocks.io/txns/Ebxqm1naYZbndxQrRgD9CK5YAN59TaDfcEJqkq1knxYj) |
-| `declare_silence` after the window | plan committed (60 / 40) | [`96Zzr7hU…`](https://testnet.nearblocks.io/txns/96Zzr7hUWGuyKZ3piMPnPpm2fcwn5JFKWGmFBDM71Esq) |
-| `sign_settlement_leg` → MPC network | **signed** | [`2LSgb8W2…`](https://testnet.nearblocks.io/txns/2LSgb8W2GwRBSfkWSEzohtwUJZRi9vaF15QJiiEkrLHy) |
+| `open_vigil` — 0.4 N, ~40 s of life | opened | [`Fcmi9aho…`](https://testnet.nearblocks.io/txns/Fcmi9ahod122aXa6csuuNkCk8tvKGehoSpArUQdv5shF) |
+| `tick` — anyone charges rent | agent **starved** | [`By83BTgJ…`](https://testnet.nearblocks.io/txns/By83BTgJyXRZwjVx1uucthW49Ug7DM5gYLvrRupaCyz8) |
+| `declare_silence` on a dead agent | **refused**: *a dead agent cannot settle an estate* | [`2Q2ows7v…`](https://testnet.nearblocks.io/txns/2Q2ows7v39kLh6oxajwHgrEURCFHZLuUCaAzGT3V32on) |
+| `reopen_vigil` — owner only, 3 N | watching | [`3VhB8XBc…`](https://testnet.nearblocks.io/txns/3VhB8XBcx8hB5CRRAm4kV3ie24uWGPgq3kDDgvoGQUn8) |
+| `check_in` | alive | [`G9NMJztg…`](https://testnet.nearblocks.io/txns/G9NMJztgk4SDQEAVu4CAKYmoweLCxk3XFQ1iG2ioTxbr) |
+| `declare_silence` after the window | plan committed (60 / 40) | [`QgX93dMU…`](https://testnet.nearblocks.io/txns/QgX93dMUDqWt8fQZfCrJHtsKWRA9wBBPS6gxXXavYQs) |
+| `sign_settlement_leg` → MPC network | **signed** | [`8azUSBtn…`](https://testnet.nearblocks.io/txns/8azUSBtnKtvztgXoYGNTyxuRtS7YMqGhE1cvXRw8HqLS) |
 
 Don't take the signature on trust. This reads it back from the contract,
 rebuilds the transaction from the committed plan, and recovers the signer:
@@ -140,14 +150,23 @@ rebuilds the transaction from the committed plan, and recovers the signer:
 ```console
 $ cd agent && npm run -s verify -- vigil-1268e2.testnet owner-1268e2.testnet 0
 leg 0: Amina <- 0.6 ETH on chain 11155111
-estate address (derived)   0xf2ce3aa4f02ef8c45de56002e4ae2e801bacdcc1
-signer (recovered from sig) 0xf2ce3aa4f02ef8c45de56002e4ae2e801bacdcc1
+estate address (derived)   0xf314ec824b86445cb0a13ced9748b6aad5212c66
+signer (recovered from sig) 0xf314ec824b86445cb0a13ced9748b6aad5212c66
 MATCH: the MPC network signed this transfer for the estate
 ```
 
-The estate address is unfunded, so the demo signs a notional 1 ETH and does
-not broadcast. Fund it with Sepolia ETH and the same flow broadcasts and
-records the transaction hash on chain via `record_broadcast`.
+When the MPC network answers, the contract also assembles the complete signed
+EIP-1559 transaction from the fields it checked and stores it on the leg
+(`signed_tx`). Anyone can broadcast it; nobody can change it. Handed to a
+Sepolia node, the demo's transaction is rejected for one reason only:
+
+```
+insufficient funds for gas * price + value: have 0 want 600630000000000000
+```
+
+The node decoded it, accepted the signature and identified the sender as the
+empty estate address. Fund the estate and the same bytes pay the heir. The
+frontend does exactly this: **Fund** with MetaMask, then **Broadcast**.
 
 ## Run it
 
@@ -198,13 +217,28 @@ a real settlement through `v1.signer-prod.testnet`.
 cd frontend && npm install && npm run dev
 ```
 
-Opens on the live deployment (`?contract=…&owner=…` to watch any other). It needs
-no wallet to watch: the agent's balance drains in real time at the on-chain rent
-rate, the check-in window counts down in chain time, and every MPC signature has a
-**Verify** button that recovers the signer in the browser and compares it to the
-estate address. Connecting a wallet (MyNearWallet or Meteor) adds `check_in` for
-the owner and `feed` / `tick`, which anyone may call. `npm run build` produces a
-static `dist/` that can be hosted anywhere.
+A Next.js app, exported statically (`npm run build` writes `out/`; set
+`NEXT_PUBLIC_BASE_PATH` to host under a subpath).
+
+| Page | What it does |
+|---|---|
+| `/` | What Vigil is, with live network stats |
+| `/explore` | Every vigil on the contract, filterable by status |
+| `/vigil?owner=…` | One vigil live: the agent's balance draining at the on-chain rent rate, the check-in countdown in chain time, every estate address with its real balance, and the vigil's history rebuilt from the contract's own events. The whole settlement runs from here: **Declare silence**, **Request MPC signature**, **Broadcast** the contract-assembled transaction, and watch the receipt confirm the heir was paid from the estate |
+| `/new` | Four-step wizard: heirs, schedule, endowment, review. It mirrors every check the contract makes, lets the estate live on Ethereum, Base and Arbitrum Sepolia at once, and derives every keyless address in the browser before you sign |
+| `/dashboard` | Your vigil, plus any vigils that name you as an heir |
+
+Watching needs no wallet. Connecting one (Meteor, HOT, Intear or MyNearWallet)
+adds the owner console (check in, top up, reopen a lapsed vigil, harvest
+yield, revoke, and a calendar file that repeats on the check-in schedule) and
+lets anyone feed an agent or drive a settlement. An injected EVM wallet funds
+an estate in one click.
+
+**Don't trust the UI either.** Every estate address has a **Verify keyless**
+button that asks `v1.signer-prod.testnet` itself, through its
+`derived_public_key` view, which key it would sign with for this contract and
+path, and checks that it matches both the browser's derivation and the address
+the contract stores.
 
 ### The agent daemon
 
@@ -215,7 +249,10 @@ npm run watch
 ```
 
 The loop, in order: pay rent, earn, **stop if dead**, nudge the owner, declare
-silence, settle. Step three sits above the last two on purpose, and the
+silence, settle. It settles every chain the estate holds an address on, each
+with its own RPC and nonce sequence (`EVM_RPC_URLS` overrides the defaults for
+Ethereum, Base and Arbitrum Sepolia), and broadcasts the transaction the
+contract assembled. Step three sits above the last two on purpose, and the
 contract enforces the same ordering independently.
 
 ## Layout
@@ -228,7 +265,7 @@ contracts/vigil/        the contract
   src/settlement.rs     the immutable plan
   src/tests.rs          the safety invariants
 contracts/mock-pool/    a yield source on demo timescales
-frontend/               watch any vigil live; verify signatures; check in, feed
+frontend/               Next.js: watch any vigil live, verify signatures, check in, feed
 agent/                  the watchman daemon
   src/verify.ts         recovers a settlement signature's signer from chain data
 scripts/deploy.sh       build, create accounts, deploy, initialise
