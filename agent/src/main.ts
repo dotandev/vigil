@@ -26,11 +26,27 @@ import {
 } from "./evm.js";
 import { VigilClient, type Estate, type VigilStatus } from "./near.js";
 import { announceLapse, announceSettlement, nudgeOwner } from "./outreach.js";
-import type { Hex } from "viem";
+import type { Hex, PublicClient } from "viem";
 
 const cfg = loadConfig();
 const vigil = new VigilClient(cfg);
-const evm = evmClient(cfg.evmRpcUrl);
+// One client per EVM chain the estate holds an address on.
+const clients = new Map<number, PublicClient>();
+function evmFor(chainId: number): PublicClient {
+  let c = clients.get(chainId);
+  if (!c) {
+    const url = cfg.evmRpcUrls[chainId];
+    if (!url) throw new Error(`no RPC configured for chain ${chainId}; set EVM_RPC_URLS`);
+    c = evmClient(url);
+    clients.set(chainId, c);
+  }
+  return c;
+}
+type Slot = Estate["slots"][number];
+const chainOf = (slot: Slot) => slot.chain.Evm.chain_id;
+
+/** Heirs who receive a leg on each chain, and so need gas reserved for them. */
+const legsPerPlan = (estate: Estate) => estate.heirs.filter((h) => h.evm_address).length;
 
 const near = (yocto: string | bigint) =>
   (Number(BigInt(yocto) / 10n ** 18n) / 1e6).toFixed(4);
@@ -39,12 +55,17 @@ function log(...args: unknown[]) {
   console.log(new Date().toISOString(), ...args);
 }
 
-/** The address the vigil contract can sign for on this chain. */
-const estateAddress = deriveEvmAddress(
-  cfg.contractId,
-  cfg.derivationPath,
-  ROOT_PUBLIC_KEYS[cfg.network],
-) as Hex;
+/**
+ * The address the contract can sign for on each slot, re-derived here rather
+ * than trusted from storage: the contract keeps whatever address it was given.
+ */
+function checkSlots(estate: Estate) {
+  for (const slot of estate.slots) {
+    const derived = deriveEvmAddress(cfg.contractId, slot.derivation_path, ROOT_PUBLIC_KEYS[cfg.network]);
+    const ok = derived.toLowerCase() === slot.address.toLowerCase();
+    log(`  chain ${chainOf(slot)} ${slot.derivation_path} → ${slot.address}${ok ? "" : `  MISMATCH (derives to ${derived})`}`);
+  }
+}
 
 async function payRent(status: VigilStatus) {
   const owed = await vigil.pendingRent();
@@ -70,13 +91,16 @@ async function settleOneLeg(
   estate: Estate,
 ) {
   const leg = estate.plans[planIndex]!.legs[legIndex]!;
-  log(`  leg ${legIndex} → ${leg.heir_label} ${leg.to} (${leg.value} wei)`);
+  const slot = estate.slots[leg.slot_index]!;
+  const evm = evmFor(chainOf(slot));
+  log(`  chain ${chainOf(slot)} leg ${legIndex} → ${leg.heir_label} ${leg.to} (${leg.value} wei)`);
 
+  // Gas was reserved per leg when silence was declared; never spend more.
   const fields = await buildLeg(evm, {
-    from: estateAddress,
+    from: slot.address as Hex,
     to: leg.to,
     value: BigInt(leg.value),
-    chainId: cfg.evmChainId,
+    chainId: chainOf(slot),
     nonceOffset,
     maxFeeCapWei: cfg.gasReserveWei / TRANSFER_GAS_LIMIT,
   });
@@ -86,13 +110,14 @@ async function settleOneLeg(
   await vigil.signSettlementLeg(planIndex, legIndex, fields);
 
   const refreshed = await vigil.getEstate();
-  const signature = refreshed.plans[planIndex]?.legs[legIndex]?.signature;
-  if (!signature) {
+  const signedLeg = refreshed.plans[planIndex]?.legs[legIndex];
+  if (!signedLeg?.signature) {
     log("  no signature yet; will retry next tick");
     return;
   }
 
-  const signed = assembleSignedTx(fields, signature);
+  // Prefer the transaction the contract assembled from the fields it checked.
+  const signed = (signedLeg.signed_tx as Hex | null | undefined) ?? assembleSignedTx(fields, signedLeg.signature);
   if (cfg.dryRun) {
     log(`  [dry-run] would broadcast ${signed.slice(0, 24)}…`);
     return;
@@ -153,14 +178,19 @@ async function step() {
     const untilSilent = after.silent_at_ms - now;
 
     if (after.is_silent) {
-      const balance = await readBalance(evm, estateAddress);
-      const distributable =
-        balance > cfg.gasReserveWei ? balance - cfg.gasReserveWei : 0n;
+      // One reported balance per chain slot, each net of the gas its legs need.
+      const reserve = cfg.gasReserveWei * BigInt(legsPerPlan(estate));
+      const distributable = await Promise.all(
+        estate.slots.map(async (slot) => {
+          const balance = await readBalance(evmFor(chainOf(slot)), slot.address as Hex);
+          return balance > reserve ? balance - reserve : 0n;
+        }),
+      );
       log(
         `  owner silent since ${new Date(after.silent_at_ms).toISOString()} — ` +
-          `committing plan over ${distributable} wei`,
+          `committing plans over ${distributable.join(", ")} wei`,
       );
-      await vigil.declareSilence([distributable]);
+      await vigil.declareSilence(distributable);
     } else if (untilSilent < 2 * 86_400_000) {
       log("  " + (await nudgeOwner(cfg, after, untilSilent)));
     }
@@ -175,7 +205,7 @@ async function step() {
 
 async function main() {
   log(`vigil agent watching ${cfg.owner} via ${cfg.contractId}`);
-  log(`estate address on chain ${cfg.evmChainId}: ${estateAddress}`);
+  checkSlots(await vigil.getEstate());
   if (cfg.dryRun) log("DRY RUN — no transactions will be sent");
 
   for (;;) {

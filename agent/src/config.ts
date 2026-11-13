@@ -15,6 +15,8 @@ export interface AgentConfig {
   /** EVM side. */
   evmRpcUrl: string;
   evmChainId: number;
+  /** RPC per EVM chain id, for vigils with estate addresses on several chains. */
+  evmRpcUrls: Record<number, string>;
   derivationPath: string;
   /** How often to wake up, in ms. */
   pollMs: number;
@@ -47,7 +49,16 @@ export function loadConfig(): AgentConfig {
     agentPrivateKey: required("AGENT_PRIVATE_KEY"),
     evmRpcUrl: process.env.EVM_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
     evmChainId: Number(process.env.EVM_CHAIN_ID ?? 11155111),
-    derivationPath: process.env.DERIVATION_PATH ?? "ethereum-1",
+    evmRpcUrls: {
+      11155111: "https://ethereum-sepolia-rpc.publicnode.com",
+      84532: "https://sepolia.base.org",
+      421614: "https://sepolia-rollup.arbitrum.io/rpc",
+      ...(process.env.EVM_RPC_URLS ? JSON.parse(process.env.EVM_RPC_URLS) : {}),
+      [Number(process.env.EVM_CHAIN_ID ?? 11155111)]:
+        process.env.EVM_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
+    },
+    // Paths are namespaced under the owner: the contract refuses any other shape.
+    derivationPath: process.env.DERIVATION_PATH ?? `${required("VIGIL_OWNER")}/ethereum-1`,
     pollMs: Number(process.env.POLL_MS ?? 15_000),
     minRentToTickYocto: BigInt(
       process.env.MIN_RENT_TO_TICK_YOCTO ?? 10n ** 21n,

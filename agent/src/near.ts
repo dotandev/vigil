@@ -37,6 +37,8 @@ export interface SettlementLeg {
   basis_points: number;
   status: "AwaitingSignature" | "Signed" | "Broadcast";
   signature: string | null;
+  /** Complete signed transaction, assembled by the contract. */
+  signed_tx?: string | null;
   tx_hash: string | null;
 }
 

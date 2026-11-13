@@ -9,8 +9,8 @@
  * derived from (contract, path), the MPC network really did sign that exact
  * transfer for an address nobody holds a key to.
  *
- * The fee and nonce defaults match scripts/demo.sh. They are not stored on
- * chain, because the contract only needs to check them, not remember them.
+ * Uses the signed transaction the contract assembled. For a leg without one,
+ * it rebuilds the transaction with the fee and nonce defaults scripts/demo.sh uses.
  */
 import { recoverTransactionAddress, serializeTransaction, type Hex } from "viem";
 import { deriveEvmAddress, ROOT_PUBLIC_KEYS } from "./derive.js";
@@ -57,7 +57,8 @@ const chainId = slot.chain.Evm.chain_id as number;
 const estateAddr = deriveEvmAddress(contract, slot.derivation_path, ROOT_PUBLIC_KEYS.testnet);
 
 const sig: string = leg.signature;
-const signed = serializeTransaction(
+// The contract stores the complete signed transaction; older legs only have r||s||v.
+const signed = (leg.signed_tx as Hex | undefined) ?? serializeTransaction(
   {
     type: "eip1559",
     chainId,
