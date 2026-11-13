@@ -3,8 +3,8 @@
 // The contract stores r||s||v. Rebuilding the EIP-1559 transaction from the
 // committed plan (recipient + amount are fixed on chain) and recovering the
 // signer shows the MPC network signed exactly that transfer, for the estate's
-// keyless address. Nonce and fees aren't stored — the contract only checks
-// them — so they default to what scripts/demo.sh signs with and can be edited.
+// keyless address. Nonce and fees aren't stored (the contract only checks
+// them), so they default to what scripts/demo.sh signs with.
 
 import { recoverTransactionAddress, serializeTransaction, type Hex } from "viem";
 import type { ChainSlot, Leg } from "./chain";

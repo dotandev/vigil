@@ -1,0 +1,1 @@
+Vigil: a watchman that is paid by what it guards, and dies when you do.
