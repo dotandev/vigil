@@ -43,17 +43,24 @@ ok()   { printf "  \033[32m%s\033[0m\n" "$*"; }
 bad()  { printf "  \033[31m%s\033[0m\n" "$*"; }
 act()  { printf "\n\033[1;4m%s\033[0m\n\n" "$*"; }
 
-view() { # view <method> <json-args>
-  local args; args=$(printf '%s' "$2" | base64)
-  curl -sS -X POST "$RPC" -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"call_function\",\"finality\":\"final\",\"account_id\":\"$VIGIL\",\"method_name\":\"$1\",\"args_base64\":\"$args\"}}" \
-  | python3 -c "
+view() { # view <method> <json-args> — retried, because public RPCs drop the odd read
+  local args out attempt; args=$(printf '%s' "$2" | base64)
+  for attempt in 1 2 3 4 5; do
+    if out=$(curl -sS -m 15 -X POST "$RPC" -H 'Content-Type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"call_function\",\"finality\":\"final\",\"account_id\":\"$VIGIL\",\"method_name\":\"$1\",\"args_base64\":\"$args\"}}" \
+      | python3 -c "
 import sys,json
-d=json.load(sys.stdin)
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(1)
 r=d.get('result',{})
 if 'result' in r: sys.stdout.write(''.join(map(chr,r['result'])))
-else: sys.stderr.write(json.dumps(r.get('error','unknown'))); sys.exit(1)
-"
+else: sys.stderr.write(json.dumps(r.get('error') or d.get('error') or 'unknown')); sys.exit(1)
+" 2>/dev/null); then
+      printf '%s' "$out"; return 0
+    fi
+    sleep 2
+  done
+  echo "view $1 failed after 5 attempts" >&2; return 1
 }
 
 call() { # call <signer> <method> <json-args> <deposit> [gas]
@@ -73,7 +80,9 @@ print(f\"  status={s['status']:<9} agent={s['agent_state']:<9} \"
 "
 }
 
-ESTATE_ADDR=$(cd agent && npx --yes tsx src/derive.ts "$VIGIL" ethereum-1 testnet | tail -1)
+# Paths are namespaced under the owner; the contract refuses anything else.
+ESTATE_PATH="$OWNER/ethereum-1"
+ESTATE_ADDR=$(cd agent && npx --yes tsx src/derive.ts "$VIGIL" "$ESTATE_PATH" testnet | tail -1)
 if [[ ! "$ESTATE_ADDR" =~ ^0x[0-9a-f]{40}$ ]]; then
   echo "Could not derive the estate address (got: '$ESTATE_ADDR')." >&2
   echo "Run 'npm install' in agent/ first." >&2
@@ -88,6 +97,16 @@ echo
 dim  "No private key exists for that address. It is the MPC network's root key"
 dim  "tweaked by (contract account, derivation path). Only $VIGIL"
 dim  "can ask for a signature over it, and only under the rules in the contract."
+
+# Act I endows 0.4 N and Act II 3 N, plus gas; check before starting, not halfway.
+OWNER_NEAR=$(curl -sS -X POST "$RPC" -H 'Content-Type: application/json' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$OWNER\"}}" \
+  | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result']['amount'])//10**21)" 2>/dev/null || echo 0)
+if [[ "$OWNER_NEAR" -lt 3600 ]]; then
+  echo "$OWNER holds $(python3 -c "print($OWNER_NEAR/1000)") NEAR; the demo needs about 3.6." >&2
+  echo "Top it up, e.g.: near tokens $AGENT send-near $OWNER '5 NEAR' network-config $NET sign-with-legacy-keychain send" >&2
+  exit 1
+fi
 
 # A previous run leaves a vigil behind; clear it so the story starts fresh.
 if [[ "$(view get_estate "{\"owner\":\"$OWNER\"}" 2>/dev/null)" != "null" ]]; then
@@ -114,7 +133,7 @@ call "$OWNER" open_vigil "{
     {\"label\":\"Tunde\",\"near_account\":null,\"evm_address\":\"$TUNDE\",\"basis_points\":4000}
   ],
   \"slots\": [
-    {\"chain\":{\"Evm\":{\"chain_id\":$CHAIN_ID}},\"derivation_path\":\"ethereum-1\",\"address\":\"$ESTATE_ADDR\"}
+    {\"chain\":{\"Evm\":{\"chain_id\":$CHAIN_ID}},\"derivation_path\":\"$ESTATE_PATH\",\"address\":\"$ESTATE_ADDR\"}
   ],
   \"check_in_interval_ms\": 20000,
   \"grace_period_ms\": 10000,
