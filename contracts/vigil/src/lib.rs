@@ -135,6 +135,7 @@ impl Vigil {
         );
         Self::validate_heirs(&heirs);
         require!(!slots.is_empty(), "a vigil needs at least one chain slot");
+        Self::validate_slots(&owner, &slots);
         require!(check_in_interval_ms > 0, "check-in interval must be positive");
         require!(
             rent_per_day >= self.min_rent_per_day,
@@ -417,7 +418,7 @@ impl Vigil {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(mpc::SIGN_CALLBACK_GAS)
-                    .on_settlement_signed(owner, plan_index, leg_index),
+                    .on_settlement_signed(owner, plan_index, leg_index, fields),
             )
     }
 
@@ -427,6 +428,7 @@ impl Vigil {
         owner: AccountId,
         plan_index: u32,
         leg_index: u32,
+        fields: Eip1559Fields,
         #[callback_result] result: Result<mpc::SignatureResponse, PromiseError>,
     ) -> bool {
         let Ok(signature) = result else {
@@ -441,10 +443,22 @@ impl Vigil {
         let r = big_r.affine_point.get(2..).unwrap_or_default().to_string();
         let encoded = format!("0x{}{}{:02x}", r, s.scalar, recovery_id);
 
+        // Assemble the broadcastable transaction from the fields that were
+        // checked against the plan. If the response is somehow malformed the
+        // signature is still recorded and the transaction can be built off-chain.
+        let signed_tx = match (hex::decode(&r), hex::decode(&s.scalar)) {
+            (Ok(r), Ok(s)) => fields
+                .signed_raw(recovery_id, &r, &s)
+                .ok()
+                .map(|raw| format!("0x{}", hex::encode(raw))),
+            _ => None,
+        };
+
         let estate = self.estate_mut(&owner);
         let (to, value) = {
             let leg = &mut estate.plans[plan_index as usize].legs[leg_index as usize];
             leg.signature = Some(encoded);
+            leg.signed_tx = signed_tx;
             leg.status = LegStatus::Signed;
             (leg.to.clone(), leg.value.0.to_string())
         };
@@ -606,6 +620,28 @@ impl Vigil {
             runway_ms >= first_window as u128,
             "endowment must outlast the first check-in window"
         );
+    }
+
+    /// The estate's address is derived from (this contract, derivation path)
+    /// alone, so the path is the only thing separating one owner's estate from
+    /// another's. Without this check anyone could open a vigil over somebody
+    /// else's path, name themselves as heir, go silent, and have the MPC
+    /// network sign away an estate that was never theirs. Namespacing every
+    /// path under the owner's account id makes collisions impossible: account
+    /// ids cannot contain '/', so no other owner can produce the same prefix.
+    fn validate_slots(owner: &AccountId, slots: &[ChainSlot]) {
+        let prefix = format!("{owner}/");
+        for (i, slot) in slots.iter().enumerate() {
+            require!(
+                slot.derivation_path.len() > prefix.len()
+                    && slot.derivation_path.starts_with(&prefix),
+                "a derivation path must be the owner's account id, a slash, and a name"
+            );
+            require!(
+                !slots[..i].iter().any(|s| s.derivation_path == slot.derivation_path),
+                "each chain slot needs its own derivation path"
+            );
+        }
     }
 
     fn validate_heirs(heirs: &[Heir]) {

@@ -106,9 +106,31 @@ impl Eip1559Fields {
     /// value transfer to an heir. Refusing to encode calldata at all removes
     /// the entire class of "the agent asked us to sign a contract call" attack.
     pub fn signing_hash(&self) -> Result<[u8; 32], &'static str> {
-        let to = parse_address(&self.to)?;
+        let payload = typed(rlp::list(&self.rlp_fields()?));
+        let digest = env::keccak256(&payload);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        Ok(out)
+    }
 
-        let encoded = rlp::list(&[
+    /// The broadcastable transaction: the same nine fields followed by the
+    /// signature, `0x02 || rlp([..., yParity, r, s])`. Built from the fields the
+    /// contract already checked, so what goes on chain is exactly what was
+    /// approved.
+    pub fn signed_raw(&self, y_parity: u8, r: &[u8], s: &[u8]) -> Result<Vec<u8>, &'static str> {
+        if r.len() != 32 || s.len() != 32 || y_parity > 1 {
+            return Err("malformed signature");
+        }
+        let mut items = self.rlp_fields()?;
+        items.push(rlp::uint(y_parity as u128));
+        items.push(rlp::bytes(strip_leading_zeros(r)));
+        items.push(rlp::bytes(strip_leading_zeros(s)));
+        Ok(typed(rlp::list(&items)))
+    }
+
+    fn rlp_fields(&self) -> Result<Vec<Vec<u8>>, &'static str> {
+        let to = parse_address(&self.to)?;
+        Ok(vec![
             rlp::uint(self.chain_id as u128),
             rlp::uint(self.nonce as u128),
             rlp::uint(self.max_priority_fee_per_gas.0),
@@ -116,25 +138,75 @@ impl Eip1559Fields {
             rlp::uint(self.gas_limit as u128),
             rlp::bytes(&to),
             rlp::uint(self.value.0),
-            rlp::bytes(&[]),   // data: empty
-            rlp::list(&[]),    // accessList: empty
-        ]);
-
-        let mut payload = Vec::with_capacity(encoded.len() + 1);
-        payload.push(0x02);
-        payload.extend_from_slice(&encoded);
-
-        let digest = env::keccak256(&payload);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&digest);
-        Ok(out)
+            rlp::bytes(&[]), // data: empty
+            rlp::list(&[]),  // accessList: empty
+        ])
     }
+}
+
+/// EIP-2718 envelope: the type byte, then the RLP payload.
+fn typed(encoded: Vec<u8>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(encoded.len() + 1);
+    out.push(0x02);
+    out.extend_from_slice(&encoded);
+    out
+}
+
+/// r and s are RLP integers, so a leading zero byte must go.
+fn strip_leading_zeros(b: &[u8]) -> &[u8] {
+    let first = b.iter().position(|x| *x != 0).unwrap_or(b.len());
+    &b[first..]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use near_sdk::json_types::U128;
+
+    /// Known-answer test against a transaction signed independently by viem
+    /// with a throwaway key. If this matches byte for byte, a node will accept
+    /// what the contract assembles.
+    #[test]
+    fn signed_raw_matches_an_independently_signed_transaction() {
+        let fields = Eip1559Fields {
+            chain_id: 11155111,
+            nonce: 7,
+            max_priority_fee_per_gas: U128(1_500_000_000),
+            max_fee_per_gas: U128(30_000_000_000),
+            gas_limit: 21_000,
+            to: "0x1111111111111111111111111111111111111111".into(),
+            value: U128(600_000_000_000_000_000),
+        };
+        let r = hex::decode("67aca6c00735b165f5c5a527602b4b5fa64248ecc83a50addfe29984cc83ed75").unwrap();
+        let s = hex::decode("37113879588c9931d22cf22a731b272971d35e184ee876d16c8bc7f507eda9ad").unwrap();
+        let raw = fields.signed_raw(0, &r, &s).unwrap();
+        assert_eq!(
+            format!("0x{}", hex::encode(raw)),
+            "0x02f87683aa36a7078459682f008506fc23ac00825208941111111111111111111111111111111111111111880853a0d2313c000080c080a067aca6c00735b165f5c5a527602b4b5fa64248ecc83a50addfe29984cc83ed75a037113879588c9931d22cf22a731b272971d35e184ee876d16c8bc7f507eda9ad"
+        );
+    }
+
+    #[test]
+    fn signed_raw_strips_leading_zeros_from_r_and_s() {
+        let fields = Eip1559Fields {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: U128(1),
+            max_fee_per_gas: U128(1),
+            gas_limit: 21_000,
+            to: "0x1111111111111111111111111111111111111111".into(),
+            value: U128(1),
+        };
+        let mut r = vec![0u8; 32];
+        r[31] = 9;
+        let s = vec![7u8; 32];
+        let raw = fields.signed_raw(1, &r, &s).unwrap();
+        // ... yParity 0x01, r as the single byte 0x09, s as 32 bytes
+        let tail = &raw[raw.len() - 35..];
+        assert_eq!(tail[0], 0x01);
+        assert_eq!(tail[1], 0x09);
+        assert_eq!(tail[2], 0xa0);
+    }
 
     #[test]
     fn rlp_encodes_zero_as_empty_string() {

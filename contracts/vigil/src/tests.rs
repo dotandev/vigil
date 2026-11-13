@@ -58,7 +58,7 @@ fn heirs() -> Vec<Heir> {
 fn slots() -> Vec<ChainSlot> {
     vec![ChainSlot {
         chain: Chain::Evm { chain_id: 11155111 },
-        derivation_path: "ethereum-1".into(),
+        derivation_path: format!("{}/ethereum-1", owner()),
         address: "0x9999999999999999999999999999999999999999".into(),
     }]
 }
@@ -407,4 +407,52 @@ fn a_stranger_cannot_revoke_someone_elses_vigil() {
     let mut c = open(0);
     testing_env!(ctx(stranger(), NearToken::from_yoctonear(0), DAY_MS).build());
     c.revoke();
+}
+
+// ------------------------------------------------------------ path isolation
+
+#[test]
+#[should_panic(expected = "derivation path must be the owner's account id")]
+fn nobody_can_claim_another_owners_derivation_path() {
+    // The estate address depends only on (contract, path). If a stranger could
+    // open a vigil over the owner's path, they would control the same address.
+    let mut c = open(0);
+    testing_env!(ctx(stranger(), NearToken::from_near(30), 0).build());
+    c.open_vigil(heirs(), slots(), DAY_MS, DAY_MS, NearToken::from_near(1), U128(1), None);
+}
+
+#[test]
+#[should_panic(expected = "derivation path must be the owner's account id")]
+fn an_unnamespaced_path_is_refused() {
+    let mut c = Vigil::new(signer(), None);
+    let mut s = slots();
+    s[0].derivation_path = "ethereum-1".into();
+    testing_env!(ctx(owner(), NearToken::from_near(30), 0).build());
+    c.open_vigil(heirs(), s, DAY_MS, DAY_MS, NearToken::from_near(1), U128(1), None);
+}
+
+#[test]
+#[should_panic(expected = "derivation path must be the owner's account id")]
+fn a_bare_prefix_is_not_a_path() {
+    let mut c = Vigil::new(signer(), None);
+    let mut s = slots();
+    s[0].derivation_path = format!("{}/", owner());
+    testing_env!(ctx(owner(), NearToken::from_near(30), 0).build());
+    c.open_vigil(heirs(), s, DAY_MS, DAY_MS, NearToken::from_near(1), U128(1), None);
+}
+
+#[test]
+#[should_panic(expected = "each chain slot needs its own derivation path")]
+fn two_slots_cannot_share_a_path() {
+    let mut c = Vigil::new(signer(), None);
+    let s = vec![slots()[0].clone(), slots()[0].clone()];
+    testing_env!(ctx(owner(), NearToken::from_near(30), 0).build());
+    c.open_vigil(heirs(), s, DAY_MS, DAY_MS, NearToken::from_near(1), U128(1), None);
+}
+
+#[test]
+fn the_owners_own_namespace_is_accepted() {
+    let c = open(0);
+    let e = c.get_estate(owner()).unwrap();
+    assert_eq!(e.slots[0].derivation_path, format!("{}/ethereum-1", owner()));
 }

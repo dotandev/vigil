@@ -40,6 +40,10 @@ pub struct SettlementLeg {
     pub status: LegStatus,
     /// `r || s || v`, hex, once the MPC network has responded.
     pub signature: Option<String>,
+    /// The complete signed EIP-1559 transaction, `0x02 || rlp(...)`, encoded
+    /// by the contract from the very fields it checked. Anyone can broadcast
+    /// it; nobody can change it.
+    pub signed_tx: Option<String>,
     pub tx_hash: Option<String>,
 }
 
@@ -73,6 +77,7 @@ impl SettlementPlan {
                 basis_points: *bps,
                 status: LegStatus::AwaitingSignature,
                 signature: None,
+                signed_tx: None,
                 tx_hash: None,
             })
             .collect();
